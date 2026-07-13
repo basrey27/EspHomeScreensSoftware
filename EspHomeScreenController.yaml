@@ -1,0 +1,154 @@
+esphome:
+  name: "screencontroller"
+  friendly_name: ScreenTestAchteraan
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+
+esp8266:
+  board: nodemcuv2
+
+logger:
+api:
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# --- Pin toewijzing (NodeMCU labels) ---
+# D6 (GPIO12)  -> motor snelheid (PWM)
+# D7 (GPIO13)  -> motor richting IN1
+# D5 (GPIO14)  -> motor richting IN2
+# D2 (GPIO4)   -> encoder pulse input
+# D1 (GPIO5)   -> knop omhoog
+# D4 (GPIO2)   -> knop omlaag (let op: moet HIGH zijn bij boot, pull-up voldoet hieraan
+#                 zolang de knop niet is ingedrukt tijdens opstarten)
+
+globals:
+  - id: m1_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: b1_pulse_count
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+output:
+  - platform: esp8266_pwm
+    pin: D6
+    id: m1_speed_pin
+    frequency: 1000 Hz
+
+switch:
+  - platform: gpio
+    pin: D7
+    id: m1_in1
+    internal: true
+  - platform: gpio
+    pin: D5
+    id: m1_in2
+    internal: true
+
+sensor:
+  - platform: pulse_meter
+    pin: D2
+    id: b1_enc
+    name: "Blind 1 Encoder Pulses/min"
+    internal: false
+    on_value:
+      then:
+        - lambda: |-
+            if (id(blind_1).current_operation == COVER_OPERATION_OPENING)
+              id(b1_pulse_count)--;
+            if (id(blind_1).current_operation == COVER_OPERATION_CLOSING)
+              id(b1_pulse_count)++;
+            id(b1_position_counter).publish_state(id(b1_pulse_count));
+
+  - platform: template
+    name: "Blind 1 Position Counter"
+    id: b1_position_counter
+    unit_of_measurement: "pulses"
+    accuracy_decimals: 0
+
+binary_sensor:
+  - platform: gpio
+    pin: {number: D1, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Up"
+    on_press: [cover.open: blind_1]
+    on_release: [cover.stop: blind_1]
+  - platform: gpio
+    pin: {number: D4, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Down"
+    on_press: [cover.close: blind_1]
+    on_release: [cover.stop: blind_1]
+
+script:
+  - id: ramp_up_m1
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(m1_running);'
+          then:
+            - repeat:
+                count: 50
+                then:
+                  - output.set_level:
+                      id: m1_speed_pin
+                      level: !lambda "return iteration / 50.0;"
+                  - delay: 100ms
+          else:
+            - output.set_level:
+                id: m1_speed_pin
+                level: 1.0
+      - lambda: 'id(m1_running) = true;'
+
+cover:
+  - platform: template
+    name: "Blind 1"
+    id: blind_1
+    device_class: blind
+    assumed_state: true
+    open_action:
+      - if:
+          condition:
+            lambda: 'return id(m1_running);'
+          then:
+            - output.set_level: {id: m1_speed_pin, level: 0.0}
+            - switch.turn_off: m1_in1
+            - switch.turn_off: m1_in2
+            - delay: 150ms
+      - switch.turn_on: m1_in1
+      - switch.turn_off: m1_in2
+      - script.execute: ramp_up_m1
+    close_action:
+      - if:
+          condition:
+            lambda: 'return id(m1_running);'
+          then:
+            - output.set_level: {id: m1_speed_pin, level: 0.0}
+            - switch.turn_off: m1_in1
+            - switch.turn_off: m1_in2
+            - delay: 150ms
+      - switch.turn_off: m1_in1
+      - switch.turn_on: m1_in2
+      - script.execute: ramp_up_m1
+    stop_action:
+      - script.stop: ramp_up_m1
+      - if:
+          condition:
+            lambda: 'return id(m1_running);'
+          then:
+            - repeat:
+                count: 20
+                then:
+                  - output.set_level:
+                      id: m1_speed_pin
+                      level: !lambda "return 1.0f - (iteration / 20.0f);"
+                  - delay: 50ms
+      - output.set_level: {id: m1_speed_pin, level: 0.0}
+      - switch.turn_off: m1_in1
+      - switch.turn_off: m1_in2
+      - lambda: 'id(m1_running) = false;'
