@@ -1,0 +1,16 @@
+﻿.esphome/
+.pio/
+.pioenvs/
+.piolibdeps/
+secrets.yaml
+*.bin
+*.elf
+*.map
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+venv/
+__pycache__/
+*.pyc
