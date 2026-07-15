@@ -1,0 +1,164 @@
+esphome:
+  name: "screencontroller"
+  friendly_name: BlindsControllerTest
+  min_version: 2025.11.0
+  name_add_mac_suffix: false
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api: 
+  encryption:
+    key: !secret api_encryption_key
+
+# Allow Over-The-Air updates
+ota:
+- platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+web_server:
+  port: 80
+  version: 2
+
+# Slaat kalibratie en huidige positie op in het geheugen (NVS)
+globals:
+  - id: b1_top_pulses
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  - id: b1_bottom_pulses
+    type: int
+    restore_value: yes
+    initial_value: '2000'
+  - id: b1_current_pos
+    type: int
+    restore_value: yes
+    initial_value: '0'
+
+# PWM Output voor Snelheidsregeling (L298N ENA pin)
+output:
+  - platform: ledc
+    pin: GPIO12
+    id: m1_speed_pin
+
+# Digitale pinnen voor Richting (L298N IN1 & IN2 pinnen)
+switch:
+  - platform: gpio
+    pin: GPIO13
+    id: m1_in1
+    internal: true
+  - platform: gpio
+    pin: GPIO27
+    id: m1_in2
+    internal: true
+
+# Pulse counter voor de Encoder (A-kanaal)
+sensor:
+  - platform: pulse_counter
+    pin: GPIO34
+    id: b1_enc
+    update_interval: 1s
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (id(blind_1).current_operation == COVER_OPERATION_OPENING) id(b1_current_pos)--;
+            if (id(blind_1).current_operation == COVER_OPERATION_CLOSING) id(b1_current_pos)++;
+
+# Foutmelding en fysieke knoppen voor Home Assistant
+binary_sensor:
+  - platform: template
+    name: "Blind 1 Jam Error"
+    id: b1_error
+    device_class: problem
+
+  # Fysieke handmatige knoppen (Ingedrukt houden = bewegen, loslaten = stop)
+  - platform: gpio
+    pin: {number: GPIO15, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Up"
+    on_press: [cover.open: blind_1]
+    on_release: [cover.stop: blind_1]
+  - platform: gpio
+    pin: {number: GPIO2, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Down"
+    on_press: [cover.close: blind_1]
+    on_release: [cover.stop: blind_1]
+
+# Scripts voor de 5-seconden Ramp Up en Jam Detectie
+script:
+  - id: ramp_up_m1
+    mode: restart
+    then:
+      - repeat:
+          count: 50
+          then:
+            - output.set_level:
+                id: m1_speed_pin
+                level: !lambda "return iteration / 50.0;"
+            - delay: 100ms
+
+  - id: jam_check_b1
+    mode: restart
+    then:
+      - delay: 5s
+      - if:
+          condition:
+            lambda: 'return id(b1_enc).state == 0;'
+          then:
+            - cover.stop: blind_1
+            - binary_sensor.template.publish: {id: b1_error, state: ON}
+
+# De Cover component
+cover:
+  - platform: template
+    name: "Blind 1"
+    id: blind_1
+    device_class: blind
+    has_position: true
+    open_action:
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_on: m1_in1
+      - switch.turn_off: m1_in2
+      - script.execute: ramp_up_m1
+      - script.execute: jam_check_b1
+    close_action:
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_off: m1_in1
+      - switch.turn_on: m1_in2
+      - script.execute: ramp_up_m1
+      - script.execute: jam_check_b1
+    stop_action:
+      - script.stop: ramp_up_m1
+      - script.stop: jam_check_b1
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_off: m1_in1
+      - switch.turn_off: m1_in2
+    position_action:
+      - lambda: |-
+          float target_pct = pos;
+
+# Kalibratie Knoppen voor Home Assistant
+button:
+  - platform: template
+    name: "Set Blind 1 Top"
+    on_press: 
+      - lambda: 'id(b1_top_pulses) = id(b1_current_pos);'
+      - binary_sensor.template.publish: {id: b1_error, state: OFF}
+  - platform: template
+    name: "Set Blind 1 Bottom"
+    on_press:
+      - lambda: 'id(b1_bottom_pulses) = id(b1_current_pos);'

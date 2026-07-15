@@ -1,20 +1,25 @@
 esphome:
   name: "screencontroller"
-  friendly_name: ScreenTestAchteraan
+  friendly_name: BlindsControllerTest
   min_version: 2025.11.0
   name_add_mac_suffix: false
-  # Single-threaded build to avoid a Windows/SCons race condition where
-  # parallel compiler jobs corrupt shared response files, producing spurious
-  # "cannot specify -o with -c/-S/-E with multiple files" errors.
-  compile_process_limit: 1
+
+  on_boot:
+    priority: -100
+    then:
+      - sensor.rotary_encoder.set_value:
+          id: b1_encoder_position
+          value: !lambda "return id(b1_current_pos);"
 
 esp32:
-  board: esp32dev
+  variant: esp32
   framework:
-    type: arduino
+    type: esp-idf
 
 logger:
+
 api:
+
 ota:
   - platform: esphome
 
@@ -28,20 +33,6 @@ web_server:
 
 preferences:
   flash_write_interval: 10s
-
-# --- Pin toewijzing (ESP32, generieke NodeMCU-stijl devboard) ---
-# GPIO25  -> motor snelheid (PWM, ledc)
-# GPIO26  -> motor richting IN1
-# GPIO27  -> motor richting IN2
-# GPIO32  -> encoder puls (enkel kanaal; richting komt uit software, niet uit de
-#            encoder zelf - zie HARDWARE_TODO.md)
-# GPIO33  -> knop omhoog
-# GPIO14  -> knop omlaag
-#
-# Alle vijf zijn gewone GPIO's zonder boot-strapping functie, dus geen van de
-# ESP8266-beperkingen (D3/GPIO0, D4/GPIO2) is hier nog van toepassing. Bewust
-# vermeden: GPIO0/2/4/5/12/15 (boot-strapping), GPIO6-11 (intern flash-gebruik),
-# GPIO34-39 (input-only, geen interne pull-up - ongeschikt voor INPUT_PULLUP).
 
 # ------------------------------------------------------------
 # Persistente en tijdelijke waarden
@@ -121,9 +112,10 @@ output:
 
 switch:
   - platform: gpio
-    pin: GPIO26
+    pin: GPIO13
     id: m1_in1
     internal: true
+
   - platform: gpio
     pin: GPIO27
     id: m1_in2
@@ -134,17 +126,23 @@ switch:
 # ------------------------------------------------------------
 
 sensor:
-  - platform: pulse_counter
-    name: "Blind 1 Encoder Pulses/min"
-    id: b1_enc
-    pin:
-      number: GPIO32
-      mode: INPUT_PULLUP
-    update_interval: 100ms
-    on_raw_value:
+  - platform: rotary_encoder
+    name: "Blind 1 Encoder Position"
+    id: b1_encoder_position
+    pin_a:
+      number: GPIO34
+      mode:
+        input: true
+    pin_b:
+      number: GPIO35
+      mode:
+        input: true
+    resolution: 1
+    restore_mode: RESTORE_DEFAULT_ZERO
+    on_value:
       then:
         - lambda: |-
-            id(b1_current_pos) -= id(b1_motor_direction) * (int) x;
+            id(b1_current_pos) = (int) x;
 
   - platform: template
     name: "Blind 1 Current Value"
@@ -185,7 +183,10 @@ binary_sensor:
     device_class: problem
 
   - platform: gpio
-    pin: {number: GPIO33, mode: INPUT_PULLUP, inverted: true}
+    pin:
+      number: GPIO16
+      mode: INPUT_PULLUP
+      inverted: true
     name: "Blind 1 Button Up"
     on_press:
       - script.execute: motor_1_up_manual
@@ -193,7 +194,10 @@ binary_sensor:
       - script.execute: motor_1_stop_soft
 
   - platform: gpio
-    pin: {number: GPIO14, mode: INPUT_PULLUP, inverted: true}
+    pin:
+      number: GPIO17
+      mode: INPUT_PULLUP
+      inverted: true
     name: "Blind 1 Button Down"
     on_press:
       - script.execute: motor_1_down_manual
@@ -280,6 +284,9 @@ button:
     on_press:
       - lambda: |-
           id(b1_current_pos) = 0;
+      - sensor.rotary_encoder.set_value:
+          id: b1_encoder_position
+          value: 0
       - component.update: b1_current_value_sensor
 
 # ------------------------------------------------------------
@@ -689,6 +696,7 @@ script:
           id(b1_pwm_level) = 0.0;
           id(b1_motor_direction) = 0;
           id(b1_auto_move) = false;
+          id(b1_current_pos) = (int) id(b1_encoder_position).state;
 
       - component.update: b1_current_value_sensor
 

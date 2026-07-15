@@ -1,0 +1,373 @@
+esphome:
+  name: triple-blind-controller
+
+esp32:
+  board: esp32dev
+
+# Slaat kalibratie en huidige positie op in het flash-geheugen (NVS)
+globals:
+  # Blind 1
+  - id: b1_top_pulses
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  - id: b1_bottom_pulses
+    type: int
+    restore_value: yes
+    initial_value: '2000'
+  - id: b1_current_pos
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  # Blind 2
+  - id: b2_top_pulses
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  - id: b2_bottom_pulses
+    type: int
+    restore_value: yes
+    initial_value: '2000'
+  - id: b2_current_pos
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  # Blind 3
+  - id: b3_top_pulses
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  - id: b3_bottom_pulses
+    type: int
+    restore_value: yes
+    initial_value: '2000'
+  - id: b3_current_pos
+    type: int
+    restore_value: yes
+    initial_value: '0'
+
+# PWM Outputs voor Snelheidsregeling (L298N ENA / ENB pinnen)
+output:
+  - platform: ledc
+    pin: GPIO12
+    id: m1_speed_pin  # Sluit aan op ENA van Driver 1
+  - platform: ledc
+    pin: GPIO14
+    id: m2_speed_pin  # Sluit aan op ENB van Driver 1
+  - platform: ledc
+    pin: GPIO26
+    id: m3_speed_pin  # Sluit aan op ENA van Driver 2
+
+# Digitale pinnen voor Richting (L298N IN1 t/m IN6 pinnen)
+switch:
+  # Motor 1 (Driver 1)
+  - platform: gpio
+    pin: GPIO13
+    id: m1_in1
+    internal: true
+  - platform: gpio
+    pin: GPIO27
+    id: m1_in2
+    internal: true
+  # Motor 2 (Driver 1)
+  - platform: gpio
+    pin: GPIO25
+    id: m2_in3
+    internal: true
+  - platform: gpio
+    pin: GPIO33
+    id: m2_in4
+    internal: true
+  # Motor 3 (Driver 2)
+  - platform: gpio
+    pin: GPIO32
+    id: m3_in5
+    internal: true
+  - platform: gpio
+    pin: GPIO21
+    id: m3_in6
+    internal: true
+
+# Pulse counters voor de Encoders (A-kanalen)
+sensor:
+  - platform: pulse_counter
+    pin: GPIO34
+    id: b1_enc
+    update_interval: 1s
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (id(blind_1).current_operation == COVER_OPERATION_OPENING) id(b1_current_pos)--;
+            if (id(blind_1).current_operation == COVER_OPERATION_CLOSING) id(b1_current_pos)++;
+  
+  - platform: pulse_counter
+    pin: GPIO35
+    id: b2_enc
+    update_interval: 1s
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (id(blind_2).current_operation == COVER_OPERATION_OPENING) id(b2_current_pos)--;
+            if (id(blind_2).current_operation == COVER_OPERATION_CLOSING) id(b2_current_pos)++;
+
+  - platform: pulse_counter
+    pin: GPIO36
+    id: b3_enc
+    update_interval: 1s
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (id(blind_3).current_operation == COVER_OPERATION_OPENING) id(b3_current_pos)--;
+            if (id(blind_3).current_operation == COVER_OPERATION_CLOSING) id(b3_current_pos)++;
+
+# Foutmelding status entiteiten en fysieke knoppen voor Home Assistant
+binary_sensor:
+  - platform: template
+    name: "Blind 1 Jam Error"
+    id: b1_error
+    device_class: problem
+  - platform: template
+    name: "Blind 2 Jam Error"
+    id: b2_error
+    device_class: problem
+  - platform: template
+    name: "Blind 3 Jam Error"
+    id: b3_error
+    device_class: problem
+
+  # Fysieke handmatige knoppen (Ingedrukt houden = bewegen, loslaten = stop)
+  # Blind 1
+  - platform: gpio
+    pin: {number: GPIO15, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Up"
+    on_press: [cover.open: blind_1]
+    on_release: [cover.stop: blind_1]
+  - platform: gpio
+    pin: {number: GPIO2, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 1 Button Down"
+    on_press: [cover.close: blind_1]
+    on_release: [cover.stop: blind_1]
+  # Blind 2
+  - platform: gpio
+    pin: {number: GPIO4, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 2 Button Up"
+    on_press: [cover.open: blind_2]
+    on_release: [cover.stop: blind_2]
+  - platform: gpio
+    pin: {number: GPIO5, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 2 Button Down"
+    on_press: [cover.close: blind_2]
+    on_release: [cover.stop: blind_2]
+  # Blind 3
+  - platform: gpio
+    pin: {number: GPIO18, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 3 Button Up"
+    on_press: [cover.open: blind_3]
+    on_release: [cover.stop: blind_3]
+  - platform: gpio
+    pin: {number: GPIO19, mode: INPUT_PULLUP, inverted: true}
+    name: "Blind 3 Button Down"
+    on_press: [cover.close: blind_3]
+    on_release: [cover.stop: blind_3]
+
+# Scripts voor de 5-seconden Ramp Up en Jam Detectie per blind
+script:
+  # --- BLIND 1 SCRIPTS ---
+  - id: ramp_up_m1
+    mode: restart
+    then:
+      - repeat:
+          count: 50
+          then:
+            - output.set_level:
+                id: m1_speed_pin
+                level: !lambda "return iteration / 50.0;"
+            - delay: 100ms
+  - id: jam_check_b1
+    mode: restart
+    then:
+      - delay: 5s
+      - if:
+          condition:
+            lambda: 'return id(b1_enc).state == 0;'
+          then:
+            - cover.stop: blind_1
+            - binary_sensor.template.publish: {id: b1_error, state: ON}
+
+  # --- BLIND 2 SCRIPTS ---
+  - id: ramp_up_m2
+    mode: restart
+    then:
+      - repeat:
+          count: 50
+          then:
+            - output.set_level:
+                id: m2_speed_pin
+                level: !lambda "return iteration / 50.0;"
+            - delay: 100ms
+  - id: jam_check_b2
+    mode: restart
+    then:
+      - delay: 5s
+      - if:
+          condition:
+            lambda: 'return id(b2_enc).state == 0;'
+          then:
+            - cover.stop: blind_2
+            - binary_sensor.template.publish: {id: b2_error, state: ON}
+
+  # --- BLIND 3 SCRIPTS ---
+  - id: ramp_up_m3
+    mode: restart
+    then:
+      - repeat:
+          count: 50
+          then:
+            - output.set_level:
+                id: m3_speed_pin
+                level: !lambda "return iteration / 50.0;"
+            - delay: 100ms
+  - id: jam_check_b3
+    mode: restart
+    then:
+      - delay: 5s
+      - if:
+          condition:
+            lambda: 'return id(b3_enc).state == 0;'
+          then:
+            - cover.stop: blind_3
+            - binary_sensor.template.publish: {id: b3_error, state: ON}
+
+# De Core Blinds (Covers)
+cover:
+  - platform: template
+    name: "Blind 1"
+    id: blind_1
+    device_class: blind
+    has_position: true
+    open_action:
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_on: m1_in1
+      - switch.turn_off: m1_in2
+      - script.execute: ramp_up_m1
+      - script.execute: jam_check_b1
+    close_action:
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_off: m1_in1
+      - switch.turn_on: m1_in2
+      - script.execute: ramp_up_m1
+      - script.execute: jam_check_b1
+    stop_action:
+      - script.stop: ramp_up_m1
+      - script.stop: jam_check_b1
+      - output.set_level:
+          id: m1_speed_pin
+          level: 0.0
+      - switch.turn_off: m1_in1
+      - switch.turn_off: m1_in2
+    position_action:
+      - lambda: |-
+          float target_pct = pos;
+
+  - platform: template
+    name: "Blind 2"
+    id: blind_2
+    device_class: blind
+    has_position: true
+    open_action:
+      - output.set_level:
+          id: m2_speed_pin
+          level: 0.0
+      - switch.turn_on: m2_in3
+      - switch.turn_off: m2_in4
+      - script.execute: ramp_up_m2
+      - script.execute: jam_check_b2
+    close_action:
+      - output.set_level:
+          id: m2_speed_pin
+          level: 0.0
+      - switch.turn_off: m2_in3
+      - switch.turn_on: m2_in4
+      - script.execute: ramp_up_m2
+      - script.execute: jam_check_b2
+    stop_action:
+      - script.stop: ramp_up_m2
+      - script.stop: jam_check_b2
+      - output.set_level:
+          id: m2_speed_pin
+          level: 0.0
+      - switch.turn_off: m2_in3
+      - switch.turn_off: m2_in4
+    position_action:
+      - lambda: |-
+          float target_pct = pos;
+
+  - platform: template
+    name: "Blind 3"
+    id: blind_3
+    device_class: blind
+    has_position: true
+    open_action:
+      - output.set_level:
+          id: m3_speed_pin
+          level: 0.0
+      - switch.turn_on: m3_in5
+      - switch.turn_off: m3_in6
+      - script.execute: ramp_up_m3
+      - script.execute: jam_check_b3
+    close_action:
+      - output.set_level:
+          id: m3_speed_pin
+          level: 0.0
+      - switch.turn_off: m3_in5
+      - switch.turn_on: m3_in6
+      - script.execute: ramp_up_m3
+      - script.execute: jam_check_b3
+    stop_action:
+      - script.stop: ramp_up_m3
+      - script.stop: jam_check_b3
+      - output.set_level:
+          id: m3_speed_pin
+          level: 0.0
+      - switch.turn_off: m3_in5
+      - switch.turn_off: m3_in6
+    position_action:
+      - lambda: |-
+          float target_pct = pos;
+
+# Kalibratie Knoppen voor Home Assistant dashboard
+button:
+  # Blind 1
+  - platform: template
+    name: "Set Blind 1 Top"
+    on_press: 
+      - lambda: 'id(b1_top_pulses) = id(b1_current_pos);'
+      - binary_sensor.template.publish: {id: b1_error, state: OFF}
+  - platform: template
+    name: "Set Blind 1 Bottom"
+    on_press:
+      - lambda: 'id(b1_bottom_pulses) = id(b1_current_pos);'
+  # Blind 2
+  - platform: template
+    name: "Set Blind 2 Top"
+    on_press: 
+      - lambda: 'id(b2_top_pulses) = id(b2_current_pos);'
+      - binary_sensor.template.publish: {id: b2_error, state: OFF}
+  - platform: template
+    name: "Set Blind 2 Bottom"
+    on_press:
+      - lambda: 'id(b2_bottom_pulses) = id(b2_current_pos);'
+  # Blind 3
+  - platform: template
+    name: "Set Blind 3 Top"
+    on_press: 
+      - lambda: 'id(b3_top_pulses) = id(b3_current_pos);'
+      - binary_sensor.template.publish: {id: b3_error, state: OFF}
+  - platform: template
+    name: "Set Blind 3 Bottom"
+    on_press:
+      - lambda: 'id(b3_bottom_pulses) = id(b3_current_pos);'
